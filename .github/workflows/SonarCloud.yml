@@ -10,6 +10,10 @@ on:
     paths-ignore:
       - "docs/**"
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
   sonarcloud:
     name: SonarCloud
@@ -19,7 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Full history needed for SonarCloud blame data
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -37,16 +41,34 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             libboost-all-dev \
-            libeigen3-dev \
             ninja-build \
             cmake \
-            lcov
+            unzip \
+            curl
 
       - name: Install gcovr
         run: pip install gcovr==7.2
 
       - name: Install SonarCloud build wrapper
-        uses: SonarSource/sonarcloud-github-c-cpp@v3
+        run: |
+          curl -L \
+            https://sonarcloud.io/static/cpp/build-wrapper-linux-x86-64.zip \
+            -o build-wrapper.zip
+          unzip build-wrapper.zip
+          sudo mv build-wrapper-linux-x86-64/build-wrapper-linux-x86-64 /usr/local/bin/
+          rm -rf build-wrapper.zip build-wrapper-linux-x86-64
+          build-wrapper-linux-x86-64 --version
+
+      - name: Install sonar-scanner
+        run: |
+          SCANNER_VERSION=6.2.1.4610
+          curl -L \
+            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip" \
+            -o sonar-scanner.zip
+          unzip sonar-scanner.zip
+          sudo mv sonar-scanner-${SCANNER_VERSION}-linux-x64 /opt/sonar-scanner
+          echo "/opt/sonar-scanner/bin" >> $GITHUB_PATH
+          rm sonar-scanner.zip
 
       - name: Configure with CMake
         run: |
@@ -62,10 +84,10 @@ jobs:
             -DACTS_BUILD_EVERYTHING=OFF \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
-      - name: Build with wrapper
+      - name: Build with build-wrapper
         run: |
           build-wrapper-linux-x86-64 \
-            --out-dir build_wrapper_output \
+            --out-dir bw-output \
             cmake --build build --clean-first -j$(nproc)
 
       - name: Run unit tests
@@ -73,22 +95,15 @@ jobs:
           find ./build/bin -maxdepth 1 -name "*Test*" -executable \
             -exec '{}' ';' || true
 
-      - name: List coverage files
-        run: find ./build -name "*.gcda" -o -name "*.gcno" | head -20
-
       - name: Collect coverage into XML
         run: |
           gcovr \
             --sonarqube \
             --root . \
-            --filter="^/home/runner/work/acts-sonarcloud/acts-sonarcloud/Core/" \
+            --filter="Core/" \
             --output=coverage.xml \
             build/
-
-      - name: Verify coverage report
-        run: |
-          echo "Coverage XML size: $(wc -c < coverage.xml) bytes"
-          head -5 coverage.xml
+          echo "Coverage file size: $(wc -c < coverage.xml) bytes"
 
       - name: Run sonar-scanner
         env:
@@ -96,5 +111,6 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: |
           sonar-scanner \
-            --define sonar.cfamily.compile-commands=build/compile_commands.json \
-            --define sonar.coverageReportPaths=coverage.xml
+            --define sonar.cfamily.compile-commands=bw-output/compile_commands.json \
+            --define sonar.coverageReportPaths=coverage.xml \
+            --define sonar.host.url=https://sonarcloud.io
