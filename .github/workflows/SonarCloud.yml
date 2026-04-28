@@ -1,0 +1,100 @@
+name: SonarCloud Analysis
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "docs/**"
+
+jobs:
+  sonarcloud:
+    name: SonarCloud
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history needed for SonarCloud blame data
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libboost-all-dev \
+            libeigen3-dev \
+            ninja-build \
+            cmake \
+            lcov
+
+      - name: Install gcovr
+        run: pip install gcovr==7.2
+
+      - name: Install SonarCloud build wrapper
+        uses: SonarSource/sonarcloud-github-c-cpp@v3
+
+      - name: Configure with CMake
+        run: |
+          cmake -S . -B build \
+            -GNinja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="--coverage" \
+            -DACTS_USE_SYSTEM_BOOST=OFF \
+            -DACTS_USE_SYSTEM_EIGEN3=OFF \
+            -DACTS_BUILD_UNITTESTS=ON \
+            -DACTS_BUILD_INTEGRATIONTESTS=OFF \
+            -DACTS_BUILD_EXAMPLES=OFF \
+            -DACTS_BUILD_EVERYTHING=OFF \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build with wrapper
+        run: |
+          build-wrapper-linux-x86-64 \
+            --out-dir build_wrapper_output \
+            cmake --build build --clean-first -j$(nproc)
+
+      - name: Run unit tests
+        run: |
+          find ./build/bin -maxdepth 1 -name "*Test*" -executable \
+            -exec '{}' ';' || true
+
+      - name: List coverage files
+        run: find ./build -name "*.gcda" -o -name "*.gcno" | head -20
+
+      - name: Collect coverage into XML
+        run: |
+          gcovr \
+            --sonarqube \
+            --root . \
+            --filter="^/home/runner/work/acts-sonarcloud/acts-sonarcloud/Core/" \
+            --output=coverage.xml \
+            build/
+
+      - name: Verify coverage report
+        run: |
+          echo "Coverage XML size: $(wc -c < coverage.xml) bytes"
+          head -5 coverage.xml
+
+      - name: Run sonar-scanner
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            --define sonar.cfamily.compile-commands=build/compile_commands.json \
+            --define sonar.coverageReportPaths=coverage.xml
